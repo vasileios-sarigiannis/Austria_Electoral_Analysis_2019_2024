@@ -1,0 +1,556 @@
+---
+title: "Austria Voter Transitions"
+output:
+  word_document: default
+  html_document: default
+date: "2026-09-08"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction
+
+This project uses Austria as a case study to estimate potential voter transitions between European Parliament political groups from the 2019 to the 2024 European Parliament election.
+
+The analysis is based on electoral data from Austrian national political parties that contested the 2019 and 2024 European Parliament elections. Votes for each national party are classified according to the European Parliament political group to which the party belonged in the respective election year. The resulting political-group-level data are then used to estimate potential voter movements between European Parliament political groups and abstention, while allowing these estimated transitions to be interpreted in relation to the corresponding Austrian national parties.
+
+# Required Packages
+
+The analysis uses four R packages. The `tidyverse` package is used to import, transform, organize, and manipulate the electoral data throughout the analysis. The `scales` package is used to format numerical values as percentages in the visualizations. The `ggalluvial` package is used to create the alluvial plot that visualizes selected estimated voter transitions. Finally, the `sf` package is used to import, process, and visualize the geographical data used in the regional electoral analysis.
+
+```{r, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(scales)
+library(ggalluvial)
+```
+
+# Import and Check Data
+
+The electoral data used in this analysis were obtained from the official website of the Austrian Federal Ministry of the Interior (Bundesministerium für Inneres). The data contain the official results of the 2019 and 2024 European Parliament elections in Austria.
+
+The data were organized at the NUTS 2 level, corresponding to Austria's nine federal states (Bundesländer): Burgenland, Carinthia, Lower Austria, Upper Austria, Salzburg, Styria, Tyrol, Vorarlberg, and Vienna. For each federal state, the datasets include the number of registered voters, votes received by the Austrian national parties, abstention, and invalid votes.
+
+The original electoral results were organized and prepared in LibreOffice. Votes received by the Austrian national parties were then grouped according to the European Parliament political group to which each party belonged in the respective election year. The main national parties were classified as follows:
+
+| Austrian National Party | 2019 European Political Group | 2024 European Political Group |
+| ----------------------- | ----------------------------- | ----------------------------- |
+| ÖVP                     | EPP                           | EPP                           |
+| SPÖ                     | S&D                           | S&D                           |
+| FPÖ                     | ID                            | PfE                           |
+| The Greens              | Greens/EFA                    | Greens/EFA                    |
+| NEOS                    | Renew Europe                  | Renew Europe                  |
+
+Votes for parties outside these five main parties were combined into the Other (OTH) category. In 2019, OTH consists of KPÖ and EUROPA JETZT, while in 2024 it consists of KPÖ and DNA. The composition of this category therefore differs between the two elections.
+
+In the prepared datasets, REG represents registered voters, ABS represents abstention, and INV represents invalid votes. The suffixes 19 and 24 indicate the 2019 and 2024 election years, respectively.
+
+The prepared datasets were exported from LibreOffice as CSV files and subsequently imported into R for the voter-transition analysis.
+
+```{r, message=FALSE, warning=FALSE}
+austria2019 <- read_csv("austria_2019.csv")
+austria2024 <- read_csv("austria_2024.csv")
+```
+
+The `colnames()` function is then used to inspect the variable names in both datasets before the data are transformed for the voter-transition analysis.
+
+```{r, message=FALSE, warning=FALSE}
+colnames(austria2024)
+colnames(austria2019)
+```
+
+# Prepare Inputs
+
+The electoral data are transformed into the inputs required for the voter-transition estimation. First, the `myN` object is created using the number of registered voters in each federal state in 2019. This represents the size of the electorate in each regional unit and provides the population weights used by the VTR method.
+
+```{r, message=FALSE, warning=FALSE}
+myN <- austria2019 %>% select(REG19)
+```
+
+The `myX` and `myT` objects represent the electoral distributions for 2019 and 2024, respectively, and are used as the two electoral-distribution inputs in the `multirate()` function. The number of votes in each category is divided by the number of registered voters in the corresponding federal state. This converts the original vote counts into proportions of the registered electorate, including abstention and invalid votes. Together with `myN`, these two objects are subsequently used by the VTR method to estimate voter transition rates between the two elections.
+
+```{r, message=FALSE, warning=FALSE}
+myT <-
+  austria2024 %>%
+  mutate(
+    EPP24 = EPP24 / REG24,
+    SD24  = SD24 / REG24,
+    PFE24 = PFE24 / REG24,
+    EFA24 = EFA24 / REG24,
+    REE24 = REE24 / REG24,
+    OTH24 = OTH24 / REG24,
+    ABS24 = ABS24 / REG24,
+    INV24 = INV24 / REG24
+  ) %>%
+  select(EPP24, SD24, PFE24, EFA24, REE24, OTH24, ABS24, INV24)
+
+myX <-
+  austria2019 %>%
+  mutate(
+    EPP19 = EPP19 / REG19,
+    SD19  = SD19 / REG19,
+    ID19  = ID19 / REG19,
+    EFA19 = EFA19 / REG19,
+    REE19 = REE19 / REG19,
+    OTH19 = OTH19 / REG19,
+    ABS19 = ABS19 / REG19,
+    INV19 = INV19 / REG19
+  ) %>%
+  select(EPP19, SD19, ID19, EFA19, REE19, OTH19, ABS19, INV19)
+```
+
+# Data Checks
+
+A series of consistency checks was conducted to verify that the federal-state codes matched correctly across the two datasets and that all transformed variables fell within the expected value range. Minimum and maximum values were also inspected to identify potential coding or transformation errors.
+
+First, the federal-state codes were compared across the two datasets to verify that observations corresponded correctly between the two elections. The comparison was expected to return TRUE for all observations.
+
+```{r, message=FALSE, warning=FALSE, results='hide'}
+austria2019$CODE == austria2024$CODE
+```
+
+The total number of matching federal-state codes was then calculated as an additional check.
+
+```{r, message=FALSE, warning=FALSE}
+sum(austria2019$CODE == austria2024$CODE)
+```
+
+All 9 federal-state codes matched across the two datasets.
+
+Minimum and maximum values were inspected to ensure that all transformed variables remained within the valid proportional range from 0 to 1. Since `myX` and `myT` contain relative frequencies, each value represents the proportion of registered voters belonging to a particular electoral category and should therefore lie between 0 (0%) and 1 (100%).
+
+```{r, message=FALSE, warning=FALSE, results='hide'}
+myX %>% 
+  summarize_all(min) %>% 
+  print(width = Inf)
+
+myX %>% 
+  summarize_all(max) %>% 
+  print(width = Inf)
+
+myT %>% 
+  summarize_all(min) %>% 
+  print(width = Inf)
+
+myT %>% 
+  summarize_all(max) %>% 
+  print(width = Inf)
+```
+
+The row sums of `myX` and `myT` were then inspected to verify that the electoral categories collectively accounted for the entire registered electorate in each federal state. Since `myX` and `myT` contain relative frequencies, the proportions across each row are expected to sum to approximately 1 (100%).
+
+```{r, message=FALSE, warning=FALSE}
+rowSums(myX)
+rowSums(myT)
+```
+
+The row sums were approximately equal to 1 for all federal states, confirming that the electoral categories accounted for the full registered electorate.
+
+As a final validation check, all values in the processed datasets were tested to confirm that they fell within the range from 0 to 1.
+
+```{r, message=FALSE, warning=FALSE}
+all(myX >= 0 & myX <= 1)
+all(myT >= 0 & myT <= 1)
+```
+
+Both checks returned `TRUE`, confirming that all transformed values were within the expected proportional range.
+
+# Estimate Voter Transitions
+
+The project requires the accompanying datasets and the external R script `VTR.R` to be located in the same working directory as the R Markdown file to ensure reproducibility.
+
+The external script `VTR.R` was loaded to access the functions required for the estimation procedure.
+
+```{r, message=FALSE, warning=FALSE}
+source("VTR.R")
+```
+
+The `multirate()` function was then applied to `myN`, `myX`, and `myT` to estimate voter transition patterns between the 2019 and 2024 European Parliament elections in Austria. The value `0.01` was specified as the stopping threshold of the iterative estimation procedure, meaning that the algorithm continues until the remaining unallocated electorate falls to 1% or less.
+
+```{r, message=FALSE, warning=FALSE}
+z <- multirate(myN, myX, myT, 0.01)
+```
+
+The output of the `multirate()` function is stored in the object `z`, which contains the estimated voter-transition results, including the `bb` and `Bb` components. The `z$bb` component contains transition estimates for the individual regional units, while `z$Bb` contains the aggregate voter-transition matrix with the estimated transition rates across Austria. Since this analysis focuses on aggregate voter-transition patterns, `z$Bb` is used in the subsequent analysis.
+
+The complete `z` object is then saved as an RDS file and subsequently reloaded, allowing the estimated results to be stored and reused without rerunning the `multirate()` procedure.
+
+```{r, message=FALSE, warning=FALSE}
+write_rds(z, "z.rds")
+z <- read_rds("z.rds")
+```
+
+# Export Aggregate Transition Matrix
+
+The aggregate voter-transition matrix contained in `z$Bb` was exported as a CSV file to provide a separate record of the estimated transition rates. Since the 2019 electoral categories are stored as row names in the matrix, the matrix was first converted into a data frame and the row names were converted into a regular column before export.
+
+```{r, message=FALSE, warning=FALSE}
+z$Bb %>% 
+  as.data.frame() %>%
+  rownames_to_column() %>%
+  write_csv2(file = "austria19-austria24.csv")
+```
+
+# Prepare Transition Results
+
+The aggregate voter-transition matrix `z$Bb` was used as the basis for preparing the transition results for further analysis. The matrix was first converted into a data frame using the `as.data.frame()` function. The `rownames_to_column()` function was then used to convert the row names, which represent the 2019 electoral categories, into a regular column named `group_2019`.
+
+The `pivot_longer()` function was subsequently used to transform the data from wide to long format. The resulting long-format data frame contains three columns: `group_2019`, which identifies the 2019 electoral category; `group_2024`, which identifies the 2024 destination category; and `transition_rate`, which contains the corresponding estimated voter-transition rate. Finally, the `arrange()` function was used to order the estimated voter transitions from the highest to the lowest transition rate.
+
+```{r, message=FALSE, warning=FALSE}
+transitions_long <-
+  z$Bb %>%
+  as.data.frame() %>%
+  rownames_to_column("group_2019") %>%
+  pivot_longer(
+    cols = -group_2019,
+    names_to = "group_2024",
+    values_to = "transition_rate"
+  ) %>%
+  arrange(desc(transition_rate))
+
+transitions_long
+```
+
+# Filter Major Voter Transitions
+
+To focus the subsequent analysis on the more substantial estimated voter movements, the `filter()` function was applied to the `transitions_long` data frame. Only estimated voter transitions with a `transition_rate` greater than or equal to `0.05` (5%) were retained. The resulting observations were stored in the `major_transitions` object.
+
+```{r, message=FALSE, warning=FALSE}
+major_transitions <-
+  transitions_long %>%
+  filter(transition_rate >= 0.05)
+
+major_transitions
+```
+
+# Voter Retention
+
+To examine estimated voter retention, five transitions were selected from the `major_transitions` data frame using the `filter()` function. These correspond to EPP → EPP, S&D → S&D, Greens/EFA → Greens/EFA, Renew → Renew, and ID → PfE. The first four represent retention within the same European Parliament political group, while ID → PfE reflects the change in European Parliament political-group affiliation of FPÖ between the two elections.
+
+The `mutate()` function was then used to create two additional descriptive columns, with `case_when()` assigning labels according to the values of `group_2019`. The `european_political_groups` column provides readable labels for the selected European political-group transitions, while the `national_party` column identifies the corresponding Austrian national party. In this way, EPP is associated with ÖVP, S&D with SPÖ, Greens/EFA with the Greens, Renew with NEOS, and the ID → PfE transition with FPÖ. The resulting observations were stored in the `retention` object.
+
+```{r, message=FALSE, warning=FALSE}
+retention <-
+  major_transitions %>%
+  filter(
+    (group_2019 == "ID19"  & group_2024 == "PFE24") |
+      (group_2019 == "REE19" & group_2024 == "REE24") |
+      (group_2019 == "SD19"  & group_2024 == "SD24") |
+      (group_2019 == "EFA19" & group_2024 == "EFA24") |
+      (group_2019 == "EPP19" & group_2024 == "EPP24")
+  ) %>%
+  mutate(
+    european_political_groups = case_when(
+      group_2019 == "ID19"  ~ "ID → PfE",
+      group_2019 == "REE19" ~ "Renew",
+      group_2019 == "SD19"  ~ "S&D",
+      group_2019 == "EFA19" ~ "Greens/EFA",
+      group_2019 == "EPP19" ~ "EPP"
+    ),
+    national_party = case_when(
+      group_2019 == "ID19"  ~ "FPÖ",
+      group_2019 == "REE19" ~ "NEOS",
+      group_2019 == "SD19"  ~ "SPÖ",
+      group_2019 == "EFA19" ~ "Greens",
+      group_2019 == "EPP19" ~ "ÖVP"
+    )
+  )
+
+retention
+```
+
+# Voter Retention Visualization
+
+The estimated retention rates stored in the `retention` object were visualized using `ggplot()`. The European Parliament political groups were placed on the x-axis, while the corresponding estimated retention rates were placed on the y-axis. The `reorder()` function was used to arrange the political groups from the highest to the lowest estimated retention rate.
+
+The `geom_col()` function was used to represent the retention rates as vertical bars, while `geom_text()` was used to display the estimated percentage above each bar. The `scale_fill_manual()` function assigned a distinct color to each European Parliament political group, and `scale_y_continuous()` formatted the values on the y-axis as percentages. Finally, `labs()` was used to define the axis and legend labels, and `theme_classic()` was applied to provide a clean visual presentation.
+
+```{r, message=FALSE, warning=FALSE}
+retention %>% 
+  ggplot(aes(
+    x = reorder(european_political_groups, -transition_rate),
+    y = transition_rate,
+    fill = european_political_groups
+  )) +
+  geom_col() +
+  geom_text(
+    aes(label = scales::percent(transition_rate, accuracy = 0.1)),
+    vjust = -0.5
+  ) +
+  scale_fill_manual(
+    values = c(
+      "ID → PfE" = "navy",
+      "Renew" = "orange",
+      "S&D" = "red",
+      "Greens/EFA" = "green",
+      "EPP" = "blue"
+    )
+  ) +
+  scale_y_continuous(labels = scales::label_percent()) +
+  labs(
+    x = "European Political Groups",
+    y = "Estimated Retention Rate",
+    fill = "European Political Group"
+  ) +
+  theme_classic()
+```
+
+# Selected Voter Transitions
+
+To examine selected estimated voter movements, four transitions were selected from the `major_transitions` data frame using the `filter()` function. These correspond to EPP → PfE, EPP → S&D, EPP → Abstention, and S&D → Abstention. These transitions were selected to examine notable estimated movements from EPP and S&D towards other European Parliament political groups or abstention between the two elections.
+
+The `mutate()` function was then used to create two additional descriptive columns, with `case_when()` assigning labels according to the combinations of `group_2019` and `group_2024`. The `european_group_transition` column provides readable labels for the selected transitions, while the `national_party` column provides the corresponding interpretation in terms of Austrian national parties. In this way, EPP → PfE is associated with ÖVP → FPÖ, EPP → S&D with ÖVP → SPÖ, EPP → Abstention with ÖVP → Abstention, and S&D → Abstention with SPÖ → Abstention. The resulting observations were stored in the `selected_transitions` object.
+
+```{r, message=FALSE, warning=FALSE}
+selected_transitions <-
+  major_transitions %>%
+  filter(
+    (group_2019 == "EPP19" & group_2024 == "PFE24") |
+      (group_2019 == "EPP19" & group_2024 == "SD24") |
+      (group_2019 == "EPP19" & group_2024 == "ABS24") |
+      (group_2019 == "SD19"  & group_2024 == "ABS24")
+  ) %>%
+  mutate(
+    european_group_transition = case_when(
+      group_2019 == "EPP19" & group_2024 == "PFE24" ~ "EPP → PfE",
+      group_2019 == "EPP19" & group_2024 == "SD24"  ~ "EPP → S&D",
+      group_2019 == "EPP19" & group_2024 == "ABS24" ~ "EPP → Abstention",
+      group_2019 == "SD19"  & group_2024 == "ABS24" ~ "S&D → Abstention"
+    ),
+    national_party = case_when(
+      group_2019 == "EPP19" & group_2024 == "PFE24" ~ "ÖVP → FPÖ",
+      group_2019 == "EPP19" & group_2024 == "SD24"  ~ "ÖVP → SPÖ",
+      group_2019 == "EPP19" & group_2024 == "ABS24" ~ "ÖVP → Abstention",
+      group_2019 == "SD19"  & group_2024 == "ABS24" ~ "SPÖ → Abstention"
+    )
+  )
+
+selected_transitions
+```
+
+# Voter Transition Visualization
+
+The selected estimated voter transitions stored in the `selected_transitions` object were visualized using `ggplot()` and an alluvial plot. The 2019 electoral categories were placed on the left side of the plot and the 2024 destination categories on the right side, while `transition_rate` determines the size of each estimated voter flow.
+
+The `geom_alluvium()` function was used to represent the estimated voter movements between the two elections, with the flows colored according to their 2024 destination category. The `geom_stratum()` function was used to display the electoral categories on both sides of the plot, while `geom_text()` was used to label these categories. The `scale_fill_manual()` function assigned distinct colors to PfE, S&D, and Abstention. The `labs()` function was used to define the axis and legend labels, while the y-axis label was removed. Finally, `theme_classic()` and additional `theme()` settings were used to remove unnecessary axis text and ticks and provide a cleaner visual presentation.
+
+```{r, message=FALSE, warning=FALSE}
+selected_transitions %>%
+  ggplot(aes(
+    axis1 = group_2019,
+    axis2 = group_2024,
+    y = transition_rate
+  )) +
+  geom_alluvium(aes(fill = group_2024)) +
+  geom_stratum() +
+  geom_text(
+    stat = "stratum",
+    aes(label = after_stat(stratum))
+  ) +
+  scale_fill_manual(
+    values = c(
+      "PFE24" = "navy",
+      "SD24" = "red",
+      "ABS24" = "grey"
+    )
+  ) +
+  labs(
+    x = "Electoral Categories (2019 → 2024)",
+    y = NULL,
+    fill = "2024 Destination"
+  ) +
+  theme_classic() +
+  theme(
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank()
+  )
+```
+
+# Regional Electoral Analysis
+
+Geographical boundaries for Austria's nine NUTS-2 regions were obtained from Eurostat's GISCO geographical database. The NUTS 2024 Level 2 regional polygons were downloaded in GeoJSON format at a 1:10 million scale and using the EPSG:4326 coordinate reference system. The file was saved in the project directory as austria_map.geojson and imported into R using the sf package. These geographical boundaries were used to visualize regional changes in electoral support between the 2019 and 2024 European Parliament elections.
+
+```{r, message=FALSE, warning=FALSE}
+library(sf)
+
+austria_map <- st_read(
+  "austria_map.geojson",
+  quiet = TRUE
+)
+```
+
+The geographical dataset contains NUTS-2 regions from multiple European countries. Therefore, the data were filtered using the country code to retain only the Austrian NUTS-2 regions.
+
+```{r, message=FALSE, warning=FALSE}
+austria_map <-
+  austria_map %>%
+  filter(CNTR_CODE == "AT")
+```
+
+The resulting spatial dataset contains the nine NUTS-2 regions of Austria. The regional codes and names were inspected before combining the geographical boundaries with the electoral data.
+
+```{r, message=FALSE, warning=FALSE}
+austria_map %>%
+  select(NUTS_ID, NAME_LATN) %>%
+  st_drop_geometry()
+```
+
+## Regional Change in EPP/ÖVP Electoral Support
+
+To examine regional differences in electoral support, the vote share of the EPP/ÖVP was calculated for each Austrian NUTS-2 region in both elections. Valid votes were calculated by subtracting abstentions and invalid votes from the number of registered voters. The change in electoral support was then expressed in percentage points between 2019 and 2024.
+
+```{r, message=FALSE, warning=FALSE}
+epp_regional <-
+  austria2019 %>%
+  select(CODE, `NUTS 2`, EPP19, REG19, ABS19, INV19) %>%
+  left_join(
+    austria2024 %>%
+      select(CODE, EPP24, REG24, ABS24, INV24),
+    by = "CODE"
+  ) %>%
+  mutate(
+    valid19 = REG19 - ABS19 - INV19,
+    valid24 = REG24 - ABS24 - INV24,
+    EPP19_share = EPP19 / valid19,
+    EPP24_share = EPP24 / valid24,
+    EPP_change = (EPP24_share - EPP19_share) * 100
+  )
+
+epp_regional
+```
+
+### Regional Distribution of Changes in EPP/ÖVP Support
+
+To visualize the regional differences in EPP/ÖVP electoral support, the electoral data were combined with Austria's NUTS-2 geographical boundaries. The `NUTS_ID` variable in the geographical data corresponds to the `CODE` variable in the electoral data, allowing each region's electoral change to be matched with its geographical area.
+
+```{r, message=FALSE, warning=FALSE}
+epp_map <-
+  austria_map %>%
+  left_join(
+    epp_regional %>%
+      select(CODE, EPP_change),
+    by = c("NUTS_ID" = "CODE")
+  )
+
+epp_map_projected <- st_transform(epp_map, 3035)
+
+ggplot(epp_map_projected) +
+  geom_sf(aes(fill = EPP_change)) +
+  geom_sf_text(
+    aes(label = NAME_LATN),
+    size = 3
+  ) +
+  scale_fill_gradient(
+    low = "paleturquoise",
+    high = "darkturquoise",
+    name = "Change (pp)"
+  ) +
+  labs(
+    title = "Change in EPP/ÖVP Electoral Support by Austrian Federal State",
+    subtitle = "2019–2024 European Parliament Elections",
+    fill = "Change (pp)"
+  ) +
+  theme_void()
+```
+
+The map displays the change in the EPP/ÖVP share of valid votes between the 2019 and 2024 European Parliament elections, measured in percentage points rather than estimated voter transitions. Lighter shades indicate larger declines in EPP/ÖVP electoral support, while darker shades indicate smaller declines. Therefore, the map provides a descriptive regional comparison of electoral support and complements the Austria-wide voter transition estimates produced by the VTR analysis.
+
+### ÖVP Regional Vote Share by Austrian Federal State
+
+The following table presents the ÖVP's vote share in each Austrian federal state in the 2019 and 2024 European Parliament elections, together with the change in percentage points.
+
+```{r, message=FALSE, warning=FALSE}
+epp_table <-
+  epp_regional %>%
+  select(`NUTS 2`, EPP19_share, EPP24_share, EPP_change) %>%
+  arrange(EPP_change)
+
+epp_table
+
+write_csv(epp_table, "ovp_regional_results.csv")
+```
+
+The table is ordered from the largest to the smallest decline in ÖVP vote share. The results are based directly on the official election results and therefore represent actual changes in vote share rather than estimated voter transitions.
+
+## Regional Change in FPÖ Support
+
+To examine the geographical variation in FPÖ support, the change in the party's vote share between the 2019 and 2024 European Parliament elections was calculated across Austria's nine federal states. The comparison is based on the official election results rather than the VTR estimates. For each election, the number of votes received by the FPÖ was divided by the total number of valid votes in the respective federal state. The change in support was then calculated by subtracting the FPÖ's 2019 vote share from its 2024 vote share and expressing the difference in percentage points. 
+
+```{r, message=FALSE, warning=FALSE}
+FPO_regional <-
+  austria2019 %>%
+  select(CODE, `NUTS 2`, ID19, REG19, ABS19, INV19) %>%
+  left_join(
+    austria2024 %>%
+      select(CODE, PFE24, REG24, ABS24, INV24),
+    by = "CODE"
+  ) %>%
+  mutate(
+    valid19 = REG19 - ABS19 - INV19,
+    valid24 = REG24 - ABS24 - INV24,
+    ID19_share = ID19 / valid19,
+    PFE24_share = PFE24 / valid24,
+    FPO_change = (PFE24_share - ID19_share) * 100
+  )
+
+FPO_regional
+```
+
+The variable `FPO_change` measures the change in the FPÖ's vote share between the two elections in percentage points. Positive values indicate an increase in electoral support.
+
+### Geographical Distribution of FPÖ Vote-Share Change
+
+The regional variation in the FPÖ's electoral gains is visualised using Austria's NUTS 2 boundaries. Darker shades of blue indicate larger increases in the FPÖ's vote share between 2019 and 2024.
+
+```{r, message=FALSE, warning=FALSE}
+FPO_map <- austria_map %>%
+  left_join(
+    FPO_regional %>%
+      select(CODE, FPO_change),
+    by = c("NUTS_ID" = "CODE")
+  )
+
+FPO_map_projected <- st_transform(FPO_map, 3035)
+
+ggplot(FPO_map_projected) +
+  geom_sf(
+    aes(fill = FPO_change),
+    color = "white",
+    linewidth = 0.5
+  ) +
+  geom_sf_text(
+    aes(label = NAME_LATN),
+    size = 3
+  ) +
+  scale_fill_gradient(
+    low = "lightblue",
+    high = "darkblue",
+    name = "Change (pp)"
+  ) +
+  labs(
+    title = "Change in FPÖ Vote Share across Austrian Federal States, 2019–2024",
+    subtitle = "European Parliament elections"
+  ) +
+  theme_void()
+```
+
+### FPÖ Regional Vote Share by Austrian Federal State
+
+The following table presents the FPÖ's vote share in each Austrian federal state in the 2019 and 2024 European Parliament elections, together with the change in percentage points.
+
+```{r, message=FALSE, warning=FALSE}
+FPO_table <-
+  FPO_regional %>%
+  select(`NUTS 2`, ID19_share, PFE24_share, FPO_change) %>%
+  arrange(desc(FPO_change))
+
+FPO_table
+
+write_csv(FPO_table, "fpo_regional_results.csv")
+```
+
+The table is ordered from the largest to the smallest increase in FPÖ vote share. The results are based directly on the official election results and therefore represent actual changes in vote share rather than estimated voter transitions.
