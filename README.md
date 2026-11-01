@@ -25,7 +25,7 @@ Voter transitions are estimated using the Voter Transition Rates (VTR) methodolo
 
 ## How to Run the Analysis
 
-1. Download the repository and keep all project files in the same folder.
+1. Click Code → Download ZIP on GitHub, extract the downloaded ZIP file, and keep all project files together in the extracted folder.
 2. Open `Austria_Voter_Transitions.Rproj` in RStudio.
 3. Open `analysis.R`.
 4. Install any missing R packages: `tidyverse`, `scales`, `ggalluvial`, `sf`, and `rmarkdown`.
